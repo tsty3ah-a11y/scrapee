@@ -228,6 +228,14 @@ await Actor.main(async () => {
         ],
     });
 
+    // Configure Canadian residential proxy for anti-blocking
+    const proxyConfiguration = await Actor.createProxyConfiguration({
+        groups: ['RESIDENTIAL'],
+        countryCode: 'CA',
+    });
+    const proxyUrl = await proxyConfiguration.newUrl();
+    console.log(`🔐 Using Canadian residential proxy`);
+
     const context = await browser.newContext({
         viewport: { width: 1920, height: 1080 },
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -235,6 +243,9 @@ await Actor.main(async () => {
         timezoneId: 'America/Toronto',
         geolocation: { longitude: -79.3832, latitude: 43.6532 },
         permissions: ['geolocation'],
+        proxy: {
+            server: proxyUrl,
+        },
     });
 
     const page = await context.newPage();
@@ -280,6 +291,7 @@ await Actor.main(async () => {
 
             // Retry logic for page processing (2 attempts)
             let pageProcessed = false;
+            let carLinks = []; // Store car links from successful attempt
             const maxPageAttempts = 2;
 
             for (let pageAttempt = 1; pageAttempt <= maxPageAttempts; pageAttempt++) {
@@ -328,22 +340,17 @@ await Actor.main(async () => {
                         currentPageNumber = pageToScrape;
                     }
 
-                    // Scroll to load car links
-                    console.log('📜 Scrolling to load content...');
-                    for (let i = 0; i < 3; i++) {
-                        await page.evaluate((offset) => {
-                            window.scrollTo({
-                                top: offset,
-                                behavior: 'smooth'
-                            });
-                        }, (i + 1) * 1000);
-                        await page.waitForTimeout(2000);
-                    }
-
-                    await page.waitForTimeout(3000);
+                    // Wait dynamically for listings to render (solves async timing issues)
+                    console.log('📜 Waiting for listings to render...');
+                    await page.waitForFunction(
+                        () => document.querySelectorAll('a[href*="vdp.action"]').length > 5,
+                        { timeout: 20000 }
+                    );
+                    console.log('✅ Listings detected, waiting buffer...');
+                    await page.waitForTimeout(2000); // Small buffer for lazy-loaded elements
 
                     // Extract car links
-                    const carLinks = await page.evaluate(() => {
+                    carLinks = await page.evaluate(() => {
                         const links = Array.from(document.querySelectorAll('a[href*="vdp.action"]'));
                         return [...new Set(links.map(a => a.href))];
                     });
@@ -384,13 +391,7 @@ await Actor.main(async () => {
                 continue; // Skip to next page
             }
 
-            // Get car links again (already extracted above in successful attempt)
-            const carLinks = await page.evaluate(() => {
-                const links = Array.from(document.querySelectorAll('a[href*="vdp.action"]'));
-                return [...new Set(links.map(a => a.href))];
-            });
-
-            // Visit car detail pages and scrape
+            // Visit car detail pages and scrape (carLinks already extracted in successful retry attempt)
             const linksToVisit = carLinks.slice(0, maxResults);
             console.log(`📋 Will visit ${linksToVisit.length} car detail pages`);
 
@@ -639,8 +640,13 @@ await Actor.main(async () => {
 
     } catch (error) {
         console.error(`❌ Error processing pages ${pagesToScrape.join(', ')}:`, error.message);
+    } finally {
+        // Ensure browser cleanup
+        if (browser) {
+            await browser.close();
+            console.log('🔒 Browser closed');
+        }
     }
 
-    await browser.close();
     console.log('\n✅ Scraping complete!');
 });
