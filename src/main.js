@@ -263,6 +263,44 @@ await Actor.main(async () => {
         console.log('⏳ Waiting for page to load...');
         await page.waitForTimeout(5000);
 
+        // STEP 1.5: Detect Cloudflare/challenge pages and validate proxy
+        console.log('🔍 Checking for challenges and validating proxy...');
+        const pageTitle = await page.title();
+        const pageContent = await page.content();
+
+        // Detect common blocking/challenge patterns
+        const isBlocked =
+            pageTitle.includes('Just a moment') ||
+            pageTitle.includes('Checking your browser') ||
+            pageTitle.includes('Access denied') ||
+            pageContent.includes('cf-browser-verification') ||
+            pageContent.includes('challenge-platform');
+
+        if (isBlocked) {
+            console.log('⚠️ Challenge or block detected!');
+            console.log(`📄 Page title: ${pageTitle}`);
+
+            // Save screenshot for debugging
+            await Actor.setValue('challenge-detected.png', await page.screenshot({ fullPage: false }), { contentType: 'image/png' });
+
+            throw new Error('Cloudflare/bot challenge detected - proxy may be blocked. Try running again with fresh proxy.');
+        }
+
+        // Validate we can see listings (proxy is working)
+        console.log('✅ No challenges detected');
+        const hasContent = await page.evaluate(() => {
+            const body = document.body.innerText || '';
+            return body.length > 500; // Should have substantial content
+        });
+
+        if (!hasContent) {
+            console.log('⚠️ Page loaded but content is empty - possible proxy issue');
+            await Actor.setValue('empty-page.png', await page.screenshot({ fullPage: false }), { contentType: 'image/png' });
+            throw new Error('Page content is empty - proxy may be blocked');
+        }
+
+        console.log('✅ Proxy validated - page loaded successfully');
+
         // Simulate human behavior
         console.log('🖱️ Simulating human behavior...');
         await page.mouse.move(100, 200);
