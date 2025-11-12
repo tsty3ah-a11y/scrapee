@@ -228,14 +228,6 @@ await Actor.main(async () => {
         ],
     });
 
-    // Configure Canadian residential proxy for anti-blocking
-    const proxyConfiguration = await Actor.createProxyConfiguration({
-        groups: ['RESIDENTIAL'],
-        countryCode: 'CA',
-    });
-    const proxyUrl = await proxyConfiguration.newUrl();
-    console.log(`🔐 Using Canadian residential proxy`);
-
     const context = await browser.newContext({
         viewport: { width: 1920, height: 1080 },
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -243,9 +235,6 @@ await Actor.main(async () => {
         timezoneId: 'America/Toronto',
         geolocation: { longitude: -79.3832, latitude: 43.6532 },
         permissions: ['geolocation'],
-        proxy: {
-            server: proxyUrl,
-        },
     });
 
     const page = await context.newPage();
@@ -262,44 +251,6 @@ await Actor.main(async () => {
 
         console.log('⏳ Waiting for page to load...');
         await page.waitForTimeout(5000);
-
-        // STEP 1.5: Detect Cloudflare/challenge pages and validate proxy
-        console.log('🔍 Checking for challenges and validating proxy...');
-        const pageTitle = await page.title();
-        const pageContent = await page.content();
-
-        // Detect common blocking/challenge patterns
-        const isBlocked =
-            pageTitle.includes('Just a moment') ||
-            pageTitle.includes('Checking your browser') ||
-            pageTitle.includes('Access denied') ||
-            pageContent.includes('cf-browser-verification') ||
-            pageContent.includes('challenge-platform');
-
-        if (isBlocked) {
-            console.log('⚠️ Challenge or block detected!');
-            console.log(`📄 Page title: ${pageTitle}`);
-
-            // Save screenshot for debugging
-            await Actor.setValue('challenge-detected.png', await page.screenshot({ fullPage: false }), { contentType: 'image/png' });
-
-            throw new Error('Cloudflare/bot challenge detected - proxy may be blocked. Try running again with fresh proxy.');
-        }
-
-        // Validate we can see listings (proxy is working)
-        console.log('✅ No challenges detected');
-        const hasContent = await page.evaluate(() => {
-            const body = document.body.innerText || '';
-            return body.length > 500; // Should have substantial content
-        });
-
-        if (!hasContent) {
-            console.log('⚠️ Page loaded but content is empty - possible proxy issue');
-            await Actor.setValue('empty-page.png', await page.screenshot({ fullPage: false }), { contentType: 'image/png' });
-            throw new Error('Page content is empty - proxy may be blocked');
-        }
-
-        console.log('✅ Proxy validated - page loaded successfully');
 
         // Simulate human behavior
         console.log('🖱️ Simulating human behavior...');
@@ -327,109 +278,81 @@ await Actor.main(async () => {
             console.log(`📄 Processing page ${pageToScrape} of ${maxPages}`);
             console.log(`${'='.repeat(60)}\n`);
 
-            // Retry logic for page processing (2 attempts)
-            let pageProcessed = false;
-            let carLinks = []; // Store car links from successful attempt
-            const maxPageAttempts = 2;
+            // Navigate to specific page if needed by clicking Next button (human-like)
+            if (pageToScrape !== currentPageNumber) {
+                const clicksNeeded = pageToScrape - currentPageNumber;
+                console.log(`🔄 Navigating from page ${currentPageNumber} to page ${pageToScrape} (${clicksNeeded} clicks)...`);
 
-            for (let pageAttempt = 1; pageAttempt <= maxPageAttempts; pageAttempt++) {
-                try {
-                    if (pageAttempt > 1) {
-                        console.log(`🔄 Retry attempt ${pageAttempt}/${maxPageAttempts} for page ${pageToScrape}...`);
-                    }
+                for (let i = 0; i < clicksNeeded; i++) {
+                    try {
+                        // Scroll to bottom to make pagination visible
+                        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                        await page.waitForTimeout(800);
 
-                    // Navigate to specific page if needed by clicking Next button (human-like)
-                    if (pageToScrape !== currentPageNumber) {
-                        const clicksNeeded = pageToScrape - currentPageNumber;
-                        console.log(`🔄 Navigating from page ${currentPageNumber} to page ${pageToScrape} (${clicksNeeded} clicks)...`);
+                        // Wait for and click the Next button (2-minute timeout)
+                        const nextButton = page.locator('button[data-testid="srp-desktop-page-navigation-next-page"]');
+                        await nextButton.waitFor({ state: 'visible', timeout: 120000 });
+                        await nextButton.click({ timeout: 120000 });
 
-                        for (let i = 0; i < clicksNeeded; i++) {
-                            try {
-                                // Scroll to bottom to make pagination visible
-                                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                                await page.waitForTimeout(800);
+                        console.log(`  ✅ Clicked Next button (${i + 1}/${clicksNeeded})`);
 
-                                // Wait for and click the Next button (2-minute timeout)
-                                const nextButton = page.locator('button[data-testid="srp-desktop-page-navigation-next-page"]');
-                                await nextButton.waitFor({ state: 'visible', timeout: 120000 });
-                                await nextButton.click({ timeout: 120000 });
-
-                                console.log(`  ✅ Clicked Next button (${i + 1}/${clicksNeeded})`);
-
-                                // Wait for new page to load
-                                await page.waitForTimeout(4000);
-                            } catch (error) {
-                                console.log(`  ⚠️ Next button click failed: ${error.message}`);
-                                // Fallback to hash navigation if Next button fails
-                                console.log(`  🔄 Falling back to hash navigation...`);
-                                await page.evaluate((pageNum) => {
-                                    window.location.hash = `resultsPage=${pageNum}`;
-                                }, pageToScrape);
-                                await page.waitForTimeout(5000);
-                                break; // Exit the clicking loop since we used hash navigation
-                            }
-                        }
-
-                        // Scroll to top after navigation
-                        await page.evaluate(() => window.scrollTo(0, 0));
-                        await page.waitForTimeout(1000);
-
-                        // Update current page tracker
-                        currentPageNumber = pageToScrape;
-                    }
-
-                    // Wait dynamically for listings to render (solves async timing issues)
-                    console.log('📜 Waiting for listings to render...');
-                    await page.waitForFunction(
-                        () => document.querySelectorAll('a[href*="vdp.action"]').length > 5,
-                        { timeout: 20000 }
-                    );
-                    console.log('✅ Listings detected, waiting buffer...');
-                    await page.waitForTimeout(2000); // Small buffer for lazy-loaded elements
-
-                    // Extract car links
-                    carLinks = await page.evaluate(() => {
-                        const links = Array.from(document.querySelectorAll('a[href*="vdp.action"]'));
-                        return [...new Set(links.map(a => a.href))];
-                    });
-
-                    console.log(`🚗 Found ${carLinks.length} car links on page ${pageToScrape}`);
-
-                    // Debug if no links found
-                    if (carLinks.length === 0) {
-                        console.log('⚠️ No car links found - debugging...');
-                        const currentUrl = page.url();
-                        const pageTitle = await page.title();
-                        console.log(`📍 Current URL: ${currentUrl}`);
-                        console.log(`📄 Page title: ${pageTitle}`);
-
-                        await Actor.setValue(`debug-screenshot-page${pageToScrape}.png`, await page.screenshot({ fullPage: false }), { contentType: 'image/png' });
-
-                        // If no links found, throw error to trigger retry
-                        throw new Error('No car links found on page');
-                    }
-
-                    // Mark as successfully processed and break retry loop
-                    pageProcessed = true;
-                    break;
-
-                } catch (pageError) {
-                    console.error(`❌ Error on page ${pageToScrape} (attempt ${pageAttempt}/${maxPageAttempts}): ${pageError.message}`);
-
-                    if (pageAttempt < maxPageAttempts) {
-                        console.log('⏳ Waiting 5 seconds before retry...');
+                        // Wait for new page to load
+                        await page.waitForTimeout(4000);
+                    } catch (error) {
+                        console.log(`  ⚠️ Next button click failed: ${error.message}`);
+                        // Fallback to hash navigation if Next button fails
+                        console.log(`  🔄 Falling back to hash navigation...`);
+                        await page.evaluate((pageNum) => {
+                            window.location.hash = `resultsPage=${pageNum}`;
+                        }, pageToScrape);
                         await page.waitForTimeout(5000);
+                        break; // Exit the clicking loop since we used hash navigation
                     }
                 }
+
+                // Scroll to top after navigation
+                await page.evaluate(() => window.scrollTo(0, 0));
+                await page.waitForTimeout(1000);
+
+                // Update current page tracker
+                currentPageNumber = pageToScrape;
             }
 
-            // If page failed after all retries, skip it and continue
-            if (!pageProcessed) {
-                console.log(`⚠️ Skipping page ${pageToScrape} after ${maxPageAttempts} failed attempts`);
+            // Scroll to load car links
+            console.log('📜 Scrolling to load content...');
+            for (let i = 0; i < 3; i++) {
+                await page.evaluate((offset) => {
+                    window.scrollTo({
+                        top: offset,
+                        behavior: 'smooth'
+                    });
+                }, (i + 1) * 1000);
+                await page.waitForTimeout(2000);
+            }
+
+            await page.waitForTimeout(3000);
+
+            // Extract car links
+            const carLinks = await page.evaluate(() => {
+                const links = Array.from(document.querySelectorAll('a[href*="vdp.action"]'));
+                return [...new Set(links.map(a => a.href))];
+            });
+
+            console.log(`🚗 Found ${carLinks.length} car links on page ${pageToScrape}`);
+
+            // Debug if no links found
+            if (carLinks.length === 0) {
+                console.log('⚠️ No car links found - debugging...');
+                const currentUrl = page.url();
+                const pageTitle = await page.title();
+                console.log(`📍 Current URL: ${currentUrl}`);
+                console.log(`📄 Page title: ${pageTitle}`);
+
+                await Actor.setValue(`debug-screenshot-page${pageToScrape}.png`, await page.screenshot({ fullPage: false }), { contentType: 'image/png' });
                 continue; // Skip to next page
             }
 
-            // Visit car detail pages and scrape (carLinks already extracted in successful retry attempt)
+            // Visit car detail pages and scrape
             const linksToVisit = carLinks.slice(0, maxResults);
             console.log(`📋 Will visit ${linksToVisit.length} car detail pages`);
 
@@ -678,13 +601,8 @@ await Actor.main(async () => {
 
     } catch (error) {
         console.error(`❌ Error processing pages ${pagesToScrape.join(', ')}:`, error.message);
-    } finally {
-        // Ensure browser cleanup
-        if (browser) {
-            await browser.close();
-            console.log('🔒 Browser closed');
-        }
     }
 
+    await browser.close();
     console.log('\n✅ Scraping complete!');
 });
