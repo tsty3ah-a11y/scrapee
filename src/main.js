@@ -446,6 +446,18 @@ await Actor.main(async () => {
                         if (vinSpec) vin = vinSpec.displayValue;
                     }
 
+                    // Try to extract fuel type from specifications array
+                    let fuelType = null;
+                    if (listing.specifications) {
+                        const fuelSpec = listing.specifications.find(s =>
+                            s.displayName && (
+                                s.displayName.toLowerCase().includes('fuel') ||
+                                s.displayName.toLowerCase().includes('engine')
+                            )
+                        );
+                        if (fuelSpec) fuelType = fuelSpec.displayValue;
+                    }
+
                     carData = {
                         vin,
                         title: `${listing.modelYear || ''} ${listing.makeName || ''} ${listing.modelName || ''} ${listing.trimName || ''}`.trim(),
@@ -457,10 +469,12 @@ await Actor.main(async () => {
                         trim: listing.trimName,
                         mileage: listing.mileage,
                         mileageString: listing.mileageString,
-                        dealerName: listing.sellerName,
-                        dealerCity: listing.sellerCity,
+                        dealerName: listing.sellerName || listing.seller?.name,
+                        dealerCity: listing.sellerCity || listing.seller?.city,
+                        dealerAddress: listing.seller?.address,
                         dealRating: listing.dealBadgeText,
                         bodyType: listing.bodyType,
+                        fuelType: fuelType || listing.fuelType,
                         url: carUrl,
                         pageNumber: pageToScrape,
                         searchRadius: searchRadius,
@@ -468,24 +482,36 @@ await Actor.main(async () => {
                         hasApiData: true
                     };
 
-                    // Fallback: If year or bodyType missing from API, scrape from DOM
-                    if (!carData.year || !carData.bodyType) {
+                    // Fallback: If critical fields missing from API, scrape from DOM
+                    if (!carData.year || !carData.bodyType || !carData.dealerName || !carData.dealerCity || !carData.fuelType) {
                         const domData = await carPage.evaluate(() => {
                             const yearEl = document.querySelector('div[data-cg-ft="year"] span._value_ujq1z_13');
                             const bodyTypeEl = document.querySelector('div[data-cg-ft="bodyType"] span._value_ujq1z_13');
+                            const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
+
+                            // Extract dealer info from seller section
+                            const dealerNameEl = document.querySelector('[data-testid="seller-name"]') ||
+                                                document.querySelector('.seller-name') ||
+                                                document.querySelector('a[href*="/dealer/"]');
+
+                            const dealerLocationEl = document.querySelector('[data-testid="seller-location"]') ||
+                                                     document.querySelector('.seller-location') ||
+                                                     document.querySelector('[class*="seller"] [class*="location"]');
 
                             return {
                                 year: yearEl ? yearEl.textContent.trim() : null,
-                                bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : null
+                                bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : null,
+                                fuelType: fuelTypeEl ? fuelTypeEl.textContent.trim() : null,
+                                dealerName: dealerNameEl ? dealerNameEl.textContent.trim() : null,
+                                dealerCity: dealerLocationEl ? dealerLocationEl.textContent.trim() : null
                             };
                         });
 
-                        if (!carData.year && domData.year) {
-                            carData.year = domData.year;
-                        }
-                        if (!carData.bodyType && domData.bodyType) {
-                            carData.bodyType = domData.bodyType;
-                        }
+                        if (!carData.year && domData.year) carData.year = domData.year;
+                        if (!carData.bodyType && domData.bodyType) carData.bodyType = domData.bodyType;
+                        if (!carData.fuelType && domData.fuelType) carData.fuelType = domData.fuelType;
+                        if (!carData.dealerName && domData.dealerName) carData.dealerName = domData.dealerName;
+                        if (!carData.dealerCity && domData.dealerCity) carData.dealerCity = domData.dealerCity;
                     }
                 } else {
                     // Fallback: try window.__PREFLIGHT__
@@ -501,12 +527,34 @@ await Actor.main(async () => {
                             if (vinSpec) vin = vinSpec.value;
                         }
 
+                        // Try to extract fuel type from specs
+                        let fuelType = null;
+                        if (listing.specs) {
+                            const fuelSpec = listing.specs.find(s =>
+                                s.label && (
+                                    s.label.toLowerCase().includes('fuel') ||
+                                    s.label.toLowerCase().includes('engine')
+                                )
+                            );
+                            if (fuelSpec) fuelType = fuelSpec.value;
+                        }
+
                         const titleEl = document.querySelector('h1');
                         const title = titleEl ? titleEl.textContent.trim() : '';
 
-                        // Extract year and bodyType from DOM
+                        // Extract from DOM
                         const yearEl = document.querySelector('div[data-cg-ft="year"] span._value_ujq1z_13');
                         const bodyTypeEl = document.querySelector('div[data-cg-ft="bodyType"] span._value_ujq1z_13');
+                        const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
+
+                        // Extract dealer info
+                        const dealerNameEl = document.querySelector('[data-testid="seller-name"]') ||
+                                            document.querySelector('.seller-name') ||
+                                            document.querySelector('a[href*="/dealer/"]');
+
+                        const dealerLocationEl = document.querySelector('[data-testid="seller-location"]') ||
+                                                 document.querySelector('.seller-location') ||
+                                                 document.querySelector('[class*="seller"] [class*="location"]');
 
                         return {
                             vin,
@@ -518,10 +566,11 @@ await Actor.main(async () => {
                             model: listing.model || preflight.listingModel,
                             trim: listing.trim,
                             mileage: listing.mileage || listing.odometer,
-                            dealerName: listing.dealerName || preflight.listingSellerName,
-                            dealerCity: listing.dealerCity || preflight.listingSellerCity,
+                            dealerName: dealerNameEl ? dealerNameEl.textContent.trim() : (listing.dealerName || preflight.listingSellerName),
+                            dealerCity: dealerLocationEl ? dealerLocationEl.textContent.trim() : (listing.dealerCity || preflight.listingSellerCity),
                             dealRating: listing.dealRating || listing.dealBadge,
                             bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : listing.bodyType,
+                            fuelType: fuelTypeEl ? fuelTypeEl.textContent.trim() : fuelType,
                             url: window.location.href,
                             source: 'dom',
                             hasApiData: false
@@ -537,6 +586,8 @@ await Actor.main(async () => {
                 console.log(`  Year: ${carData.year || 'NOT FOUND'}`);
                 console.log(`  Mileage: ${carData.mileageString || carData.mileage || 'NOT FOUND'}`);
                 console.log(`  Body Type: ${carData.bodyType || 'NOT FOUND'}`);
+                console.log(`  Fuel Type: ${carData.fuelType || 'NOT FOUND'}`);
+                console.log(`  Dealer: ${carData.dealerName || 'NOT FOUND'} - ${carData.dealerCity || 'NOT FOUND'}`);
                 console.log(`  Source: ${carData.source} (API: ${carData.hasApiData})`);
 
                 // Save car data
