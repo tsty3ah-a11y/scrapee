@@ -489,21 +489,20 @@ await Actor.main(async () => {
                             const bodyTypeEl = document.querySelector('div[data-cg-ft="bodyType"] span._value_ujq1z_13');
                             const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
 
-                            // Extract dealer info from seller section
-                            const dealerNameEl = document.querySelector('[data-testid="seller-name"]') ||
-                                                document.querySelector('.seller-name') ||
-                                                document.querySelector('a[href*="/dealer/"]');
+                            // Extract dealer name
+                            const dealerNameEl = document.querySelector('[data-testid="dealerName"]');
 
-                            const dealerLocationEl = document.querySelector('[data-testid="seller-location"]') ||
-                                                     document.querySelector('.seller-location') ||
-                                                     document.querySelector('[class*="seller"] [class*="location"]');
+                            // Extract location from title area (hgroup) or dealer address
+                            const locationFromTitle = document.querySelector('hgroup p.oqywn.sCSIz');
+                            const dealerAddressEl = document.querySelector('[data-testid="dealerAddress"] span[data-track-ui="dealer-address"]');
 
                             return {
                                 year: yearEl ? yearEl.textContent.trim() : null,
                                 bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : null,
                                 fuelType: fuelTypeEl ? fuelTypeEl.textContent.trim() : null,
                                 dealerName: dealerNameEl ? dealerNameEl.textContent.trim() : null,
-                                dealerCity: dealerLocationEl ? dealerLocationEl.textContent.trim() : null
+                                dealerCity: locationFromTitle ? locationFromTitle.textContent.trim() : null,
+                                dealerAddress: dealerAddressEl ? dealerAddressEl.textContent.trim() : null
                             };
                         });
 
@@ -512,6 +511,7 @@ await Actor.main(async () => {
                         if (!carData.fuelType && domData.fuelType) carData.fuelType = domData.fuelType;
                         if (!carData.dealerName && domData.dealerName) carData.dealerName = domData.dealerName;
                         if (!carData.dealerCity && domData.dealerCity) carData.dealerCity = domData.dealerCity;
+                        if (!carData.dealerAddress && domData.dealerAddress) carData.dealerAddress = domData.dealerAddress;
                     }
                 } else {
                     // Fallback: try window.__PREFLIGHT__
@@ -548,13 +548,9 @@ await Actor.main(async () => {
                         const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
 
                         // Extract dealer info
-                        const dealerNameEl = document.querySelector('[data-testid="seller-name"]') ||
-                                            document.querySelector('.seller-name') ||
-                                            document.querySelector('a[href*="/dealer/"]');
-
-                        const dealerLocationEl = document.querySelector('[data-testid="seller-location"]') ||
-                                                 document.querySelector('.seller-location') ||
-                                                 document.querySelector('[class*="seller"] [class*="location"]');
+                        const dealerNameEl = document.querySelector('[data-testid="dealerName"]');
+                        const locationFromTitle = document.querySelector('hgroup p.oqywn.sCSIz');
+                        const dealerAddressEl = document.querySelector('[data-testid="dealerAddress"] span[data-track-ui="dealer-address"]');
 
                         return {
                             vin,
@@ -567,7 +563,8 @@ await Actor.main(async () => {
                             trim: listing.trim,
                             mileage: listing.mileage || listing.odometer,
                             dealerName: dealerNameEl ? dealerNameEl.textContent.trim() : (listing.dealerName || preflight.listingSellerName),
-                            dealerCity: dealerLocationEl ? dealerLocationEl.textContent.trim() : (listing.dealerCity || preflight.listingSellerCity),
+                            dealerCity: locationFromTitle ? locationFromTitle.textContent.trim() : (listing.dealerCity || preflight.listingSellerCity),
+                            dealerAddress: dealerAddressEl ? dealerAddressEl.textContent.trim() : null,
                             dealRating: listing.dealRating || listing.dealBadge,
                             bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : listing.bodyType,
                             fuelType: fuelTypeEl ? fuelTypeEl.textContent.trim() : fuelType,
