@@ -191,11 +191,29 @@ await Actor.main(async () => {
 
     console.log('🚀 Starting CarGurus Stealth Scraper with UI Filters...');
 
-    // Get or initialize page state - now we scrape 3 pages per run
+    // Open persistent Key-Value Store (survives between runs)
+    const kv = await Actor.openKeyValueStore('SCRAPER_STATE');
+
+    // Get or initialize page state with daily reset
     let startPage = currentPage;
     if (!startPage) {
-        const state = await Actor.getValue('SCRAPER_STATE') || {};
-        startPage = state.nextPage || 1;
+        const state = await kv.getValue('state') || {};
+        const today = new Date().toISOString().split('T')[0]; // "2025-11-13"
+
+        // Check if we need to reset (new day or first run)
+        if (state.lastScrapedDate === today) {
+            // Same day → continue from where we left off
+            startPage = state.nextPage || 1;
+            console.log(`📅 Continuing from page ${startPage} (same day: ${today})`);
+        } else {
+            // Different day or first run → reset to page 1
+            startPage = 1;
+            if (state.lastScrapedDate) {
+                console.log(`📅 New day detected! Resetting to page 1 (previous: ${state.lastScrapedDate}, today: ${today})`);
+            } else {
+                console.log(`📅 First run! Starting from page 1`);
+            }
+        }
     }
 
     // Calculate the 3-page batch
@@ -636,8 +654,11 @@ await Actor.main(async () => {
         // Save state for next run - save the next batch starting page
         const lastPageScraped = pagesToScrape[pagesToScrape.length - 1];
         const nextPage = lastPageScraped + 1;
-        await Actor.setValue('SCRAPER_STATE', {
+        const today = new Date().toISOString().split('T')[0];
+
+        await kv.setValue('state', {
             nextPage,
+            lastScrapedDate: today,
             baseUrl: baseUrlWithFilters,
             searchRadius,
             lastScraped: new Date().toISOString(),
@@ -645,7 +666,7 @@ await Actor.main(async () => {
             pagesScraped: pagesToScrape
         });
 
-        console.log(`\n💾 State saved: Next run will start at page ${nextPage}`);
+        console.log(`\n💾 State saved: Next run will start at page ${nextPage} (date: ${today})`);
 
     } catch (error) {
         console.error(`❌ Error processing pages ${pagesToScrape.join(', ')}:`, error.message);
