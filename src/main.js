@@ -204,7 +204,14 @@ await Actor.main(async () => {
         if (state.lastScrapedDate === today) {
             // Same day → continue from where we left off
             startPage = state.nextPage || 1;
-            console.log(`📅 Continuing from page ${startPage} (same day: ${today})`);
+
+            // If we've exceeded maxPages, restart from page 1
+            if (startPage > maxPages) {
+                startPage = 1;
+                console.log(`📅 All pages completed! Restarting from page 1 (same day: ${today})`);
+            } else {
+                console.log(`📅 Continuing from page ${startPage} (same day: ${today})`);
+            }
         } else {
             // Different day or first run → reset to page 1
             startPage = 1;
@@ -350,17 +357,16 @@ await Actor.main(async () => {
 
             await page.waitForTimeout(3000);
 
-            // Extract car links
-            const carLinks = await page.evaluate(() => {
-                const links = Array.from(document.querySelectorAll('a[href*="vdp.action"]'));
-                return [...new Set(links.map(a => a.href))];
+            // Count available car listings
+            const totalListings = await page.evaluate(() => {
+                return document.querySelectorAll('a[data-testid="car-blade-link"]').length;
             });
 
-            console.log(`🚗 Found ${carLinks.length} car links on page ${pageToScrape}`);
+            console.log(`🚗 Found ${totalListings} car listings on page ${pageToScrape}`);
 
             // Debug if no links found
-            if (carLinks.length === 0) {
-                console.log('⚠️ No car links found - debugging...');
+            if (totalListings === 0) {
+                console.log('⚠️ No car listings found - debugging...');
                 const currentUrl = page.url();
                 const pageTitle = await page.title();
                 console.log(`📍 Current URL: ${currentUrl}`);
@@ -370,174 +376,64 @@ await Actor.main(async () => {
                 continue; // Skip to next page
             }
 
-            // Visit car detail pages and scrape
-            const linksToVisit = carLinks.slice(0, maxResults);
-            console.log(`📋 Will visit ${linksToVisit.length} car detail pages`);
+            // Process listings by clicking them (SPA-compatible)
+            const listingsToProcess = Math.min(totalListings, maxResults);
+            console.log(`📋 Will process ${listingsToProcess} car listings`);
 
-        for (const carUrl of linksToVisit) {
-            console.log(`\n🔍 Visiting car: ${carUrl}`);
+        for (let listingIndex = 0; listingIndex < listingsToProcess; listingIndex++) {
+            console.log(`\n🔍 Processing listing ${listingIndex + 1}/${listingsToProcess}...`);
 
             try {
-                const carPage = await context.newPage();
+                // Re-query the listing link by index (DOM may have changed)
+                const linkExists = await page.evaluate((index) => {
+                    const links = document.querySelectorAll('a[data-testid="car-blade-link"]');
+                    return links[index] ? true : false;
+                }, listingIndex);
 
-                // Navigate to car page
-                await carPage.goto(carUrl, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 60000
-                });
-
-                // Try to get API data with retry logic
-                let detailListingData = null;
-                const maxApiAttempts = 2; // Try twice before falling back to DOM
-
-                for (let attempt = 1; attempt <= maxApiAttempts; attempt++) {
-                    console.log(`⏳ Waiting for detailListingJson.action (attempt ${attempt}/${maxApiAttempts})...`);
-
-                    let apiResolved = false;
-
-                    const detailListingPromise = new Promise((resolve) => {
-                        carPage.on('response', async (response) => {
-                            if (apiResolved) return;
-
-                            const url = response.url();
-
-                            if (url.includes('detailListingJson.action')) {
-                                console.log(`📡 Intercepted API call: detailListingJson.action`);
-                                try {
-                                    // Race condition: timeout on JSON parsing (25 seconds)
-                                    const jsonPromise = response.json();
-                                    const timeoutPromise = new Promise((_, reject) =>
-                                        setTimeout(() => reject(new Error('JSON parse timeout')), 25000)
-                                    );
-
-                                    const data = await Promise.race([jsonPromise, timeoutPromise]);
-                                    apiResolved = true;
-                                    resolve(data);
-                                } catch (e) {
-                                    console.log(`⚠️ Failed to parse API response: ${e.message}`);
-                                    apiResolved = true;
-                                    resolve(null);
-                                }
-                            }
-                        });
-
-                        // Overall API timeout (90 seconds = 2.5x of 35s)
-                        setTimeout(() => {
-                            if (!apiResolved) {
-                                console.log(`⚠️ API timeout on attempt ${attempt}`);
-                                apiResolved = true;
-                                resolve(null);
-                            }
-                        }, 90000);
-                    });
-
-                    detailListingData = await detailListingPromise;
-
-                    // If we got data, break out of retry loop
-                    if (detailListingData && detailListingData.listing) {
-                        console.log(`✅ API data received successfully`);
-                        break;
-                    }
-
-                    // If this was the last attempt, log and continue to DOM fallback
-                    if (attempt === maxApiAttempts) {
-                        console.log(`⚠️ All API attempts failed, falling back to DOM extraction`);
-                    } else {
-                        console.log(`🔄 Retrying API call...`);
-                        await carPage.waitForTimeout(2000); // Small delay before retry
-                    }
+                if (!linkExists) {
+                    console.log(`  ⚠️ Listing ${listingIndex + 1} not found in DOM - skipping`);
+                    continue;
                 }
 
-                await carPage.waitForTimeout(1000);
+                // Click the listing to trigger SPA detail view
+                await page.evaluate((index) => {
+                    const links = document.querySelectorAll('a[data-testid="car-blade-link"]');
+                    links[index].click();
+                }, listingIndex);
 
-                // Parse data from API response
-                let carData = {};
+                console.log(`  ✅ Clicked listing ${listingIndex + 1}`);
 
-                if (detailListingData && detailListingData.listing) {
-                    const listing = detailListingData.listing;
+                // Wait for SPA detail view to load
+                try {
+                    await page.waitForSelector('div[data-cg-ft="listing-vdp-stats"]', { timeout: 10000 });
+                    console.log(`  ✅ Detail view loaded`);
+                } catch (e) {
+                    console.log(`  ⚠️ Detail view not loaded: ${e.message}`);
+                    // Try to go back to search results
+                    await page.goBack();
+                    await page.waitForTimeout(2000);
+                    continue;
+                }
 
-                    let vin = listing.vin || null;
-                    if (!vin && listing.specifications) {
-                        const vinSpec = listing.specifications.find(s =>
-                            s.displayName && s.displayName.toLowerCase() === 'vin'
-                        );
-                        if (vinSpec) vin = vinSpec.displayValue;
-                    }
+                // Small delay to let detail view fully render
+                await page.waitForTimeout(2000);
 
-                    // Try to extract fuel type from specifications array
-                    let fuelType = null;
-                    if (listing.specifications) {
-                        const fuelSpec = listing.specifications.find(s =>
-                            s.displayName && (
-                                s.displayName.toLowerCase().includes('fuel') ||
-                                s.displayName.toLowerCase().includes('engine')
-                            )
-                        );
-                        if (fuelSpec) fuelType = fuelSpec.displayValue;
-                    }
+                // Extract data from DOM (SPA detail view)
+                const carData = await page.evaluate(() => {
+                    const preflight = window.__PREFLIGHT__ || {};
+                    const listing = preflight.listing || {};
 
-                    carData = {
-                        vin,
-                        title: `${listing.modelYear || ''} ${listing.makeName || ''} ${listing.modelName || ''} ${listing.trimName || ''}`.trim(),
-                        price: listing.expectedPrice || listing.price,
-                        priceString: listing.expectedPriceString || listing.priceString,
-                        year: listing.modelYear,
-                        make: listing.makeName,
-                        model: listing.modelName,
-                        trim: listing.trimName,
-                        mileage: listing.mileage,
-                        mileageString: listing.mileageString,
-                        dealerName: listing.sellerName || listing.seller?.name,
-                        dealerCity: listing.sellerCity || listing.seller?.city,
-                        dealerAddress: listing.seller?.address,
-                        dealRating: listing.dealBadgeText,
-                        bodyType: listing.bodyType,
-                        fuelType: fuelType || listing.fuelType,
-                        url: carUrl,
-                        pageNumber: pageToScrape,
-                        searchRadius: searchRadius,
-                        source: 'api',
-                        hasApiData: true
-                    };
+                        // Extract from new DOM structure first (data-cg-ft attributes)
+                        const vinEl = document.querySelector('div[data-cg-ft="vin"] span._value_ujq1z_13');
+                        const makeEl = document.querySelector('div[data-cg-ft="make"] span._value_ujq1z_13');
+                        const modelEl = document.querySelector('div[data-cg-ft="model"] span._value_ujq1z_13');
+                        const trimEl = document.querySelector('div[data-cg-ft="trim"] span._value_ujq1z_13');
+                        const yearEl = document.querySelector('div[data-cg-ft="year"] span._value_ujq1z_13');
+                        const bodyTypeEl = document.querySelector('div[data-cg-ft="bodyType"] span._value_ujq1z_13');
+                        const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
+                        const mileageEl = document.querySelector('div[data-cg-ft="mileage"] span._value_ujq1z_13');
 
-                    // Fallback: If critical fields missing from API, scrape from DOM
-                    if (!carData.year || !carData.bodyType || !carData.dealerName || !carData.dealerCity || !carData.fuelType) {
-                        const domData = await carPage.evaluate(() => {
-                            const yearEl = document.querySelector('div[data-cg-ft="year"] span._value_ujq1z_13');
-                            const bodyTypeEl = document.querySelector('div[data-cg-ft="bodyType"] span._value_ujq1z_13');
-                            const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
-
-                            // Extract dealer name
-                            const dealerNameEl = document.querySelector('[data-testid="dealerName"]');
-
-                            // Extract location from title area (hgroup) or dealer address
-                            const locationFromTitle = document.querySelector('hgroup p.oqywn.sCSIz');
-                            const dealerAddressEl = document.querySelector('[data-testid="dealerAddress"] span[data-track-ui="dealer-address"]');
-
-                            return {
-                                year: yearEl ? yearEl.textContent.trim() : null,
-                                bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : null,
-                                fuelType: fuelTypeEl ? fuelTypeEl.textContent.trim() : null,
-                                dealerName: dealerNameEl ? dealerNameEl.textContent.trim() : null,
-                                dealerCity: locationFromTitle ? locationFromTitle.textContent.trim() : null,
-                                dealerAddress: dealerAddressEl ? dealerAddressEl.textContent.trim() : null
-                            };
-                        });
-
-                        if (!carData.year && domData.year) carData.year = domData.year;
-                        if (!carData.bodyType && domData.bodyType) carData.bodyType = domData.bodyType;
-                        if (!carData.fuelType && domData.fuelType) carData.fuelType = domData.fuelType;
-                        if (!carData.dealerName && domData.dealerName) carData.dealerName = domData.dealerName;
-                        if (!carData.dealerCity && domData.dealerCity) carData.dealerCity = domData.dealerCity;
-                        if (!carData.dealerAddress && domData.dealerAddress) carData.dealerAddress = domData.dealerAddress;
-                    }
-                } else {
-                    // Fallback: try window.__PREFLIGHT__
-                    carData = await carPage.evaluate(() => {
-                        const preflight = window.__PREFLIGHT__ || {};
-                        const listing = preflight.listing || {};
-
-                        let vin = listing.vin || null;
+                        let vin = vinEl ? vinEl.textContent.trim() : (listing.vin || null);
                         if (!vin && listing.specs) {
                             const vinSpec = listing.specs.find(s =>
                                 s.label && s.label.toLowerCase() === 'vin'
@@ -545,9 +441,9 @@ await Actor.main(async () => {
                             if (vinSpec) vin = vinSpec.value;
                         }
 
-                        // Try to extract fuel type from specs
-                        let fuelType = null;
-                        if (listing.specs) {
+                        // Try to extract fuel type from specs if not in DOM
+                        let fuelType = fuelTypeEl ? fuelTypeEl.textContent.trim() : null;
+                        if (!fuelType && listing.specs) {
                             const fuelSpec = listing.specs.find(s =>
                                 s.label && (
                                     s.label.toLowerCase().includes('fuel') ||
@@ -557,13 +453,13 @@ await Actor.main(async () => {
                             if (fuelSpec) fuelType = fuelSpec.value;
                         }
 
-                        const titleEl = document.querySelector('h1');
+                        const titleEl = document.querySelector('h1[data-cg-ft="vdp-listing-title"]');
                         const title = titleEl ? titleEl.textContent.trim() : '';
 
-                        // Extract from DOM
-                        const yearEl = document.querySelector('div[data-cg-ft="year"] span._value_ujq1z_13');
-                        const bodyTypeEl = document.querySelector('div[data-cg-ft="bodyType"] span._value_ujq1z_13');
-                        const fuelTypeEl = document.querySelector('div[data-cg-ft="fuelType"] span._value_ujq1z_13');
+                        // Extract price
+                        const priceEl = document.querySelector('div._price_1yep1_1 h2');
+                        const priceText = priceEl ? priceEl.textContent.trim() : null;
+                        const priceValue = priceText ? parseInt(priceText.replace(/[$,]/g, '')) : null;
 
                         // Extract dealer info
                         const dealerNameEl = document.querySelector('[data-testid="dealerName"]');
@@ -573,27 +469,28 @@ await Actor.main(async () => {
                         return {
                             vin,
                             title: title || preflight.listingTitle,
-                            price: preflight.listingPriceValue || listing.price,
-                            priceString: preflight.listingPriceString || listing.priceString,
+                            price: priceValue || preflight.listingPriceValue || listing.price,
+                            priceString: priceText || preflight.listingPriceString || listing.priceString,
                             year: yearEl ? yearEl.textContent.trim() : (listing.year || preflight.listingYear),
-                            make: listing.make || preflight.listingMake,
-                            model: listing.model || preflight.listingModel,
-                            trim: listing.trim,
-                            mileage: listing.mileage || listing.odometer,
+                            make: makeEl ? makeEl.textContent.trim() : (listing.make || preflight.listingMake),
+                            model: modelEl ? modelEl.textContent.trim() : (listing.model || preflight.listingModel),
+                            trim: trimEl ? trimEl.textContent.trim() : listing.trim,
+                            mileage: mileageEl ? mileageEl.textContent.trim() : (listing.mileage || listing.odometer),
                             dealerName: dealerNameEl ? dealerNameEl.textContent.trim() : (listing.dealerName || preflight.listingSellerName),
                             dealerCity: locationFromTitle ? locationFromTitle.textContent.trim() : (listing.dealerCity || preflight.listingSellerCity),
                             dealerAddress: dealerAddressEl ? dealerAddressEl.textContent.trim() : null,
                             dealRating: listing.dealRating || listing.dealBadge,
                             bodyType: bodyTypeEl ? bodyTypeEl.textContent.trim() : listing.bodyType,
-                            fuelType: fuelTypeEl ? fuelTypeEl.textContent.trim() : fuelType,
+                            fuelType: fuelType,
                             url: window.location.href,
                             source: 'dom',
                             hasApiData: false
                         };
                     });
-                    carData.pageNumber = pageToScrape;
-                    carData.searchRadius = searchRadius;
-                }
+
+                // Add page metadata
+                carData.pageNumber = pageToScrape;
+                carData.searchRadius = searchRadius;
 
                 console.log(`  VIN: ${carData.vin || 'NOT FOUND'}`);
                 console.log(`  Title: ${carData.title || 'NOT FOUND'}`);
@@ -603,14 +500,15 @@ await Actor.main(async () => {
                 console.log(`  Body Type: ${carData.bodyType || 'NOT FOUND'}`);
                 console.log(`  Fuel Type: ${carData.fuelType || 'NOT FOUND'}`);
                 console.log(`  Dealer: ${carData.dealerName || 'NOT FOUND'} - ${carData.dealerCity || 'NOT FOUND'}`);
-                console.log(`  Source: ${carData.source} (API: ${carData.hasApiData})`);
+                console.log(`  Source: ${carData.source}`);
 
                 // Save car data
                 if (carData.vin || carData.title) {
                     const dataToSave = {
                         type: 'car_listing',
                         ...carData,
-                        scrapedAt: new Date().toISOString()
+                        scrapedAt: new Date().toISOString(),
+                        source_scraper: 'Best'
                     };
 
                     await Actor.pushData(dataToSave);
@@ -618,7 +516,7 @@ await Actor.main(async () => {
 
                     // Send to webhook
                     try {
-                        const webhookUrl = 'https://n8n-production-0d7d.up.railway.app/webhook/cargurus';
+                        const webhookUrl = 'https://n8nsaved-production.up.railway.app/webhook/cargurus';
                         const response = await fetch(webhookUrl, {
                             method: 'POST',
                             headers: {
@@ -639,34 +537,46 @@ await Actor.main(async () => {
                     console.log(`  ⚠️ No data found - skipping`);
                 }
 
-                await carPage.close();
+                // Navigate back to search results
+                console.log(`  ← Going back to search results...`);
+                await page.goBack();
+
+                // Wait for search results to load
+                await page.waitForSelector('a[data-testid="car-blade-link"]', { timeout: 10000 });
+                console.log(`  ✅ Back to search results`);
 
                 // Random delay between cars
                 await page.waitForTimeout(2000 + Math.random() * 3000);
 
             } catch (error) {
-                console.error(`❌ Error processing car ${carUrl}:`, error.message);
+                console.error(`❌ Error processing listing ${listingIndex + 1}:`, error.message);
+                // Try to go back to search results if error occurred
+                try {
+                    await page.goBack();
+                    await page.waitForTimeout(2000);
+                } catch (backError) {
+                    console.error(`  ⚠️ Could not navigate back: ${backError.message}`);
+                }
             }
         }
 
+            // Save state after each page completes (more resilient to crashes)
+            const nextPage = pageToScrape + 1;
+            const today = new Date().toISOString().split('T')[0];
+
+            await kv.setValue('state', {
+                nextPage,
+                lastScrapedDate: today,
+                baseUrl: baseUrlWithFilters,
+                searchRadius,
+                lastScraped: new Date().toISOString(),
+                lastPage: pageToScrape,
+                pagesScraped: pagesToScrape.slice(0, pagesToScrape.indexOf(pageToScrape) + 1)
+            });
+
+            console.log(`💾 State saved: Page ${pageToScrape} complete. Next run will start at page ${nextPage} (date: ${today})`);
+
         } // End of page loop
-
-        // Save state for next run - save the next batch starting page
-        const lastPageScraped = pagesToScrape[pagesToScrape.length - 1];
-        const nextPage = lastPageScraped + 1;
-        const today = new Date().toISOString().split('T')[0];
-
-        await kv.setValue('state', {
-            nextPage,
-            lastScrapedDate: today,
-            baseUrl: baseUrlWithFilters,
-            searchRadius,
-            lastScraped: new Date().toISOString(),
-            lastPage: lastPageScraped,
-            pagesScraped: pagesToScrape
-        });
-
-        console.log(`\n💾 State saved: Next run will start at page ${nextPage} (date: ${today})`);
 
     } catch (error) {
         console.error(`❌ Error processing pages ${pagesToScrape.join(', ')}:`, error.message);
