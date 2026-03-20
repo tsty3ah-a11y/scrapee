@@ -1,21 +1,21 @@
 {
-  "name": "vet-planner",
-  "version": "0.1.0",
-  "private": true,
+  "name": "cargurus-stealth-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Advanced CarGurus scraper with stealth and network interception",
+  "main": "src/main.js",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "start": "node src/main.js",
+    "test": "echo \"No tests yet\" && exit 0"
   },
+  "author": "Your Name",
+  "license": "ISC",
   "dependencies": {
-    "@supabase/supabase-js": "^2.98.0",
-    "next": "16.1.6",
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "apify": "^3.5.1",
+    "playwright": "^1.44.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
-  "devDependencies": {
-    "@netlify/plugin-nextjs": "^5.15.8",
-    "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4"
-  }
+  "devDependencies": {},
+  "repository": {}
 }
